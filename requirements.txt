@@ -1,0 +1,4 @@
+streamlit
+audiorecorder
+google-generativeai
+python-dotenv

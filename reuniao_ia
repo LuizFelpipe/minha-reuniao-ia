@@ -1,0 +1,139 @@
+import os
+import wave
+import pyaudio
+import threading
+import time
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+# Carrega variáveis de ambiente (crie um arquivo .env com GOOGLE_API_KEY=sua_chave)
+load_dotenv()
+
+# Configuração da API do Gemini
+api_key = os.getenv("GOOGLE_API_KEY")
+if not api_key:
+    print("ERRO: Chave de API não encontrada. Defina GOOGLE_API_KEY no seu ambiente ou arquivo .env")
+    exit()
+
+genai.configure(api_key=api_key)
+
+class GravadorReuniao:
+    def __init__(self, filename="reuniao_temp.wav"):
+        self.filename = filename
+        self.chunk = 1024
+        self.format = pyaudio.paInt16
+        self.channels = 1 # Mono é suficiente e economiza tokens/espaço
+        self.rate = 44100
+        self.frames = []
+        self.recording = False
+        self.audio = pyaudio.PyAudio()
+
+    def listar_dispositivos(self):
+        """Lista dispositivos de áudio para ajudar a escolher o correto (Microfone ou Stereo Mix)"""
+        info = self.audio.get_host_api_info_by_index(0)
+        numdevices = info.get('deviceCount')
+        print("\n--- Dispositivos de Entrada Disponíveis ---")
+        for i in range(0, numdevices):
+            if (self.audio.get_device_info_by_host_api_device_index(0, i).get('maxInputChannels')) > 0:
+                print(f"ID {i} - {self.audio.get_device_info_by_host_api_device_index(0, i).get('name')}")
+        print("-------------------------------------------\n")
+
+    def iniciar_gravacao(self, device_index=None):
+        self.stream = self.audio.open(format=self.format,
+                                      channels=self.channels,
+                                      rate=self.rate,
+                                      input=True,
+                                      input_device_index=device_index,
+                                      frames_per_buffer=self.chunk)
+        self.frames = []
+        self.recording = True
+        print(f"🔴 Gravando... (Pressione Ctrl+C para parar e gerar a ata)")
+
+        # Thread para não bloquear o script
+        t = threading.Thread(target=self._record_loop)
+        t.start()
+
+    def _record_loop(self):
+        while self.recording:
+            data = self.stream.read(self.chunk)
+            self.frames.append(data)
+
+    def parar_gravacao(self):
+        self.recording = False
+        time.sleep(0.5) # Pequena pausa para garantir o fim do loop
+        self.stream.stop_stream()
+        self.stream.close()
+        self.audio.terminate()
+
+        # Salvar arquivo
+        wf = wave.open(self.filename, 'wb')
+        wf.setnchannels(self.channels)
+        wf.setsampwidth(self.audio.get_sample_size(self.format))
+        wf.setframerate(self.rate)
+        wf.writeframes(b''.join(self.frames))
+        wf.close()
+        print(f"💾 Áudio salvo em: {self.filename}")
+
+def gerar_ata_com_gemini(audio_path):
+    print("🧠 Enviando áudio para o Gemini e processando... (Isso pode levar alguns segundos)")
+    
+    # Upload do arquivo para o Google AI Studio
+    audio_file = genai.upload_file(path=audio_path)
+    
+    # Modelo: Gemini 1.5 Flash é rápido e barato, o Pro é mais detalhista.
+    # O Flash é excelente para áudios longos (até horas de duração).
+    model = genai.GenerativeModel('gemini-1.5-flash')
+
+    prompt = """
+    Você é um secretário executivo experiente e eficiente.
+    Ouça o áudio desta reunião com atenção.
+    
+    Sua tarefa é gerar um documento estruturado contendo:
+    1. **Resumo Executivo**: Um parágrafo conciso sobre o objetivo da reunião.
+    2. **Participantes**: Identifique os participantes pelo contexto (se possível) ou liste como "Participante 1", "Participante 2".
+    3. **Pontos Principais Discutidos**: Lista com bullets dos tópicos abordados.
+    4. **Ações e Tarefas (Action Items)**: Quem deve fazer o quê e, se mencionado, para quando.
+    5. **Decisões Tomadas**: O que foi martelo batido.
+    
+    O tom deve ser profissional e corporativo. Responda em Português do Brasil.
+    """
+
+    response = model.generate_content([prompt, audio_file])
+    
+    return response.text
+
+if __name__ == "__main__":
+    gravador = GravadorReuniao()
+    
+    # Passo 1: Listar dispositivos para o usuário escolher (opcional, pode usar o default)
+    gravador.listar_dispositivos()
+    
+    # Dica: Para gravar o Teams, você precisa selecionar o "Stereo Mix" ou usar um cabo virtual.
+    # Se deixar None, usa o microfone padrão.
+    device_id = input("Digite o ID do dispositivo de entrada (ou pressione ENTER para o padrão): ")
+    device_id = int(device_id) if device_id else None
+
+    try:
+        gravador.iniciar_gravacao(device_index=device_id)
+        while True:
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        # Captura o Ctrl+C para finalizar
+        print("\n🛑 Parando gravação...")
+        gravador.parar_gravacao()
+        
+        # Inicia o processamento da IA
+        try:
+            ata = gerar_ata_com_gemini(gravador.filename)
+            print("\n" + "="*40)
+            print("📝 ATA DA REUNIÃO GERADA PELO GEMINI")
+            print("="*40 + "\n")
+            print(ata)
+            
+            # Salvar em arquivo de texto
+            with open("ata_reuniao.md", "w", encoding="utf-8") as f:
+                f.write(ata)
+            print("\n✅ Ata salva no arquivo 'ata_reuniao.md'")
+            
+        except Exception as e:
+            print(f"❌ Erro ao processar com o Gemini: {e}")
