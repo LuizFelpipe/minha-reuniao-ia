@@ -2,7 +2,7 @@ import os
 import time
 import tempfile
 import streamlit as st
-from audiorecorder import audiorecorder
+from st_audiorec import st_audiorec
 import google.generativeai as genai
 from dotenv import load_dotenv
 
@@ -61,11 +61,11 @@ def main():
 
     # Componente de Gravação
     st.subheader("1. Gravação")
-    audio = audiorecorder("Clique para gravar", "Gravando... clique para parar")
+    wav_audio_data = st_audiorec()
 
-    if len(audio) > 0:
+    if wav_audio_data is not None:
         # Reproduzir áudio gravado
-        st.audio(audio.export().read())
+        st.audio(wav_audio_data, format='audio/wav')
         
         st.subheader("2. Processamento")
         if st.button("Gerar Ata e Resumo"):
@@ -73,7 +73,7 @@ def main():
                 try:
                     # Salva o áudio temporariamente para enviar ao Gemini
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-                        audio.export(tmp_file.name, format="wav")
+                        tmp_file.write(wav_audio_data)
                         tmp_filename = tmp_file.name
 
                     # Chama a IA
