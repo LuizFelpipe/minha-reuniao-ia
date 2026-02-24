@@ -2,7 +2,7 @@ import os
 import time
 import tempfile
 import streamlit as st
-from st_audiorec import st_audiorec
+from streamlit_mic_recorder import mic_recorder
 import google.generativeai as genai
 from dotenv import load_dotenv
 
@@ -64,7 +64,17 @@ def main():
     tab_gravacao, tab_upload = st.tabs(["🎙️ Gravar", "📂 Upload Arquivo"])
 
     with tab_gravacao:
-        wav_audio_data = st_audiorec()
+        # O mic_recorder retorna um dicionário com 'bytes' e outros metadados
+        audio_recorder_data = mic_recorder(
+            start_prompt="▶️ Iniciar Gravação",
+            stop_prompt="⏹️ Parar Gravação",
+            just_once=False,
+            use_container_width=False,
+            format="wav",
+            key="recorder"
+        )
+        # Extrai apenas os bytes se houver gravação
+        wav_audio_data = audio_recorder_data['bytes'] if audio_recorder_data else None
 
     with tab_upload:
         uploaded_file = st.file_uploader("Selecione um arquivo (.mp3, .wav, .m4a)", type=["mp3", "wav", "m4a"])
