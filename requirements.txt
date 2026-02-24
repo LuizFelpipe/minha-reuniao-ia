@@ -1,4 +1,5 @@
 streamlit
-audiorecorder
+audiorecorder>=0.1.3
+pydub
 google-generativeai
 python-dotenv
