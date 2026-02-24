@@ -59,21 +59,35 @@ def main():
         st.warning("Por favor, insira a chave da API para continuar.")
         return
 
-    # Componente de Gravação
-    st.subheader("1. Gravação")
-    wav_audio_data = st_audiorec()
+    # Componente de Entrada (Gravação ou Upload)
+    st.subheader("1. Entrada de Áudio")
+    tab_gravacao, tab_upload = st.tabs(["🎙️ Gravar", "📂 Upload Arquivo"])
 
-    if wav_audio_data is not None:
-        # Reproduzir áudio gravado
-        st.audio(wav_audio_data, format='audio/wav')
-        
+    with tab_gravacao:
+        wav_audio_data = st_audiorec()
+
+    with tab_upload:
+        uploaded_file = st.file_uploader("Selecione um arquivo (.mp3, .wav, .m4a)", type=["mp3", "wav", "m4a"])
+
+    # Lógica para definir qual áudio processar
+    audio_bytes = None
+    file_suffix = ".wav" # Padrão para gravação
+
+    if uploaded_file is not None:
+        audio_bytes = uploaded_file.getvalue()
+        file_suffix = os.path.splitext(uploaded_file.name)[1]
+        st.audio(audio_bytes, format=uploaded_file.type)
+    elif wav_audio_data is not None:
+        audio_bytes = wav_audio_data
+
+    if audio_bytes is not None:
         st.subheader("2. Processamento")
         if st.button("Gerar Ata e Resumo"):
             with st.spinner("A IA está ouvindo e escrevendo a ata..."):
                 try:
                     # Salva o áudio temporariamente para enviar ao Gemini
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-                        tmp_file.write(wav_audio_data)
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as tmp_file:
+                        tmp_file.write(audio_bytes)
                         tmp_filename = tmp_file.name
 
                     # Chama a IA
