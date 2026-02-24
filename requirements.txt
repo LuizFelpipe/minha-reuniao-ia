@@ -1,4 +1,4 @@
 streamlit
-st-audiorec
+https://github.com/stefanrmmr/streamlit_audio_recorder/archive/master.zip
 google-generativeai
 python-dotenv
