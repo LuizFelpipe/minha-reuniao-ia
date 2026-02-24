@@ -28,7 +28,7 @@ def gerar_ata_com_gemini(audio_path, api_key):
         raise ValueError("O processamento do arquivo de áudio falhou no servidor do Google.")
 
     # Usando o modelo PRO (mais robusto e inteligente) em vez do Flash
-    model = genai.GenerativeModel('gemini-1.5-pro')
+    model = genai.GenerativeModel('gemini-1.5-pro-001')
 
     prompt = """
     Você é um secretário executivo experiente e eficiente.
