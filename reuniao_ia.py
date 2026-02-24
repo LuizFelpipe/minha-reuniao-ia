@@ -24,7 +24,7 @@ def gerar_ata_com_gemini(audio_path, api_key):
         time.sleep(2)
         audio_file = genai.get_file(audio_file.name)
 
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
     prompt = """
     Você é um secretário executivo experiente e eficiente.
