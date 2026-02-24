@@ -21,10 +21,14 @@ def gerar_ata_com_gemini(audio_path, api_key):
     
     # Aguarda o processamento do arquivo pelo Google (necessário para arquivos maiores)
     while audio_file.state.name == "PROCESSING":
-        time.sleep(2)
+        time.sleep(10)
         audio_file = genai.get_file(audio_file.name)
 
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    if audio_file.state.name == "FAILED":
+        raise ValueError("O processamento do arquivo de áudio falhou no servidor do Google.")
+
+    # Usando o modelo PRO (mais robusto e inteligente) em vez do Flash
+    model = genai.GenerativeModel('gemini-1.5-pro')
 
     prompt = """
     Você é um secretário executivo experiente e eficiente.
@@ -40,7 +44,8 @@ def gerar_ata_com_gemini(audio_path, api_key):
     O tom deve ser profissional e corporativo. Responda em Português do Brasil.
     """
 
-    response = model.generate_content([prompt, audio_file])
+    # Timeout aumentado para 600s (10 min) para dar tempo de processar reuniões longas
+    response = model.generate_content([prompt, audio_file], request_options={"timeout": 600})
     return response.text
 
 def main():
@@ -64,6 +69,7 @@ def main():
     tab_gravacao, tab_upload = st.tabs(["🎙️ Gravar", "📂 Upload Arquivo"])
 
     with tab_gravacao:
+        st.warning("⚠️ Para reuniões longas (>10 min), prefira gravar no seu PC/Celular e usar a aba 'Upload'. Gravações longas no navegador podem falhar.")
         # O mic_recorder retorna um dicionário com 'bytes' e outros metadados
         audio_recorder_data = mic_recorder(
             start_prompt="▶️ Iniciar Gravação",
