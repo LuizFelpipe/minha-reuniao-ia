@@ -1,5 +1,6 @@
 import os
 import time
+import re
 import subprocess
 import tempfile
 import streamlit as st
@@ -12,8 +13,34 @@ st.set_page_config(page_title="IA de Reuniões", page_icon="🎙️")
 
 load_dotenv()
 
-# ID do dispositivo de áudio (Mixagem Estéreo) descoberto anteriormente
-AUDIO_DEVICE_ID = r'@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\wave_{B94A8C2E-8841-4C4F-A47A-577E3A2003F7}'
+def listar_dispositivos_audio(ffmpeg_path):
+    """Lista os dispositivos de áudio disponíveis no sistema usando ffmpeg."""
+    try:
+        # Executa o comando para listar dispositivos (saída vai para stderr)
+        # Usamos encoding='utf-8' com errors='ignore' para evitar travamentos com acentos
+        cmd = [ffmpeg_path, '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy']
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
+        output = result.stderr
+        
+        devices = []
+        capturing = False
+        
+        for line in output.split('\n'):
+            if "DirectShow audio devices" in line:
+                capturing = True
+                continue
+            if "DirectShow video devices" in line:
+                capturing = False
+                continue
+            
+            # Captura linhas como: [dshow @ ...]  "Mixagem estéreo (Realtek Audio)"
+            if capturing:
+                match = re.search(r'\]\s+"([^"]+)"', line)
+                if match:
+                    devices.append(match.group(1))
+        return devices
+    except Exception:
+        return []
 
 def gerar_ata_com_gemini(audio_path, api_key, model_name):
     """Envia o áudio para o Gemini e retorna a ata formatada."""
@@ -53,10 +80,14 @@ def gerar_ata_com_gemini(audio_path, api_key, model_name):
     return response.text
 
 def main():
+    # Garante que o caminho seja relativo ao arquivo do script, não onde o terminal abriu
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    ffmpeg_path = os.path.join(script_dir, "ffmpeg.exe")
+
     # Validação Inicial de Dependências
-    if not os.path.exists("ffmpeg.exe"):
+    if not os.path.exists(ffmpeg_path):
         st.error("❌ Arquivo 'ffmpeg.exe' não encontrado na pasta do projeto!")
-        st.warning("Por favor, baixe o ffmpeg.exe e coloque na mesma pasta deste script para que a gravação funcione.")
+        st.warning(f"O sistema procurou em: {ffmpeg_path}\n\nCertifique-se de que o arquivo ffmpeg.exe está exatamente ao lado do reuniao_ia.py.")
         st.stop()
 
     st.title("🎙️ Assistente de Reunião com IA")
@@ -122,6 +153,18 @@ def main():
     with tab_pc:
         st.info("Esta opção grava o som do sistema (o que você ouve). Ideal para capturar o áudio de reuniões online.")
         
+        # Detecta dispositivos disponíveis dinamicamente
+        dispositivos = listar_dispositivos_audio(ffmpeg_path)
+        
+        # Tenta selecionar automaticamente um dispositivo de Loopback (Mixagem/Stereo/Cable)
+        index_padrao = 0
+        for i, dev in enumerate(dispositivos):
+            if any(x in dev.lower() for x in ["mixagem", "stereo", "cable", "virtual"]):
+                index_padrao = i
+                break
+        
+        device_selecionado = st.selectbox("Fonte de Áudio (Selecione 'Mixagem Estéreo' ou similar):", dispositivos, index=index_padrao if dispositivos else 0)
+
         # Inicializa variáveis de estado para controle da gravação
         if 'proc_gravacao' not in st.session_state:
             st.session_state.proc_gravacao = None
@@ -130,11 +173,11 @@ def main():
 
         # Interface de Controle
         if st.session_state.proc_gravacao is None:
-            if st.button("🔴 Iniciar Gravação do PC", type="primary"):
+            if st.button("🔴 Iniciar Gravação do PC", type="primary", disabled=not dispositivos):
                 nome_arquivo = time.strftime("reuniao_pc_%Y-%m-%d_%H-%M-%S.mp3")
                 cmd = [
-                    '.\\ffmpeg.exe', '-y', '-f', 'dshow', 
-                    '-i', f'audio={AUDIO_DEVICE_ID}', 
+                    ffmpeg_path, '-y', '-f', 'dshow', 
+                    '-i', f'audio={device_selecionado}', 
                     '-vn', nome_arquivo
                 ]
                 try:
@@ -150,8 +193,8 @@ def main():
                     st.error(f"Erro ao iniciar: {e}")
                     st.warning("""
                     Possíveis causas:
-                    1. O dispositivo 'Mixagem Estéreo' está desativado neste PC.
-                    2. O ID do dispositivo de áudio mudou (comum ao trocar de computador).
+                    1. O dispositivo selecionado não está disponível.
+                    2. Permissões de microfone do Windows bloqueadas.
                     """)
         else:
             st.warning(f"🎙️ Gravando... Arquivo: {st.session_state.arquivo_gravado_pc}")
