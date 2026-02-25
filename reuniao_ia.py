@@ -11,7 +11,7 @@ st.set_page_config(page_title="IA de Reuniões", page_icon="🎙️")
 
 load_dotenv()
 
-def gerar_ata_com_gemini(audio_path, api_key):
+def gerar_ata_com_gemini(audio_path, api_key, model_name):
     """Envia o áudio para o Gemini e retorna a ata formatada."""
     genai.configure(api_key=api_key)
 
@@ -27,8 +27,8 @@ def gerar_ata_com_gemini(audio_path, api_key):
     if audio_file.state.name == "FAILED":
         raise ValueError("O processamento do arquivo de áudio falhou no servidor do Google.")
 
-    # Usando o modelo PRO (mais robusto e inteligente) em vez do Flash
-    model = genai.GenerativeModel('gemini-1.5-pro-001')
+    # Usa o modelo selecionado pelo usuário
+    model = genai.GenerativeModel(model_name)
 
     prompt = """
     Você é um secretário executivo experiente e eficiente.
@@ -63,6 +63,28 @@ def main():
     if not api_key:
         st.warning("Por favor, insira a chave da API para continuar.")
         return
+
+    # Configura a API para listar modelos disponíveis
+    genai.configure(api_key=api_key)
+    
+    try:
+        # Lista modelos que suportam geração de conteúdo
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        
+        # Tenta selecionar o Pro ou Flash automaticamente como padrão
+        default_index = 0
+        for i, m in enumerate(available_models):
+            if "gemini-1.5-pro" in m: # Prioridade para o Pro
+                default_index = i
+                break
+        
+        model_choice = st.selectbox("Modelo de IA", available_models, index=default_index)
+    except Exception as e:
+        st.error(f"Erro ao listar modelos: {e}")
+        model_choice = "models/gemini-1.5-flash" # Fallback seguro
 
     # Componente de Entrada (Gravação ou Upload)
     st.subheader("1. Entrada de Áudio")
@@ -107,7 +129,7 @@ def main():
                         tmp_filename = tmp_file.name
 
                     # Chama a IA
-                    ata = gerar_ata_com_gemini(tmp_filename, api_key)
+                    ata = gerar_ata_com_gemini(tmp_filename, api_key, model_choice)
                     
                     # Exibe o resultado
                     st.success("Ata gerada com sucesso!")
