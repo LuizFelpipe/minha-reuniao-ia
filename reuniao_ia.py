@@ -34,9 +34,11 @@ def listar_dispositivos_audio(ffmpeg_path):
                 capturing = False
                 continue
             
-            # Captura linhas como: [dshow @ ...]  "Mixagem estéreo (Realtek Audio)"
+            # Captura qualquer coisa entre aspas que não seja "Alternative name"
             if capturing:
-                match = re.search(r'\]\s+"([^"]+)"', line)
+                if "Alternative name" in line:
+                    continue
+                match = re.search(r'"([^"]+)"', line)
                 if match:
                     devices.append(match.group(1))
         return devices
@@ -173,7 +175,12 @@ def main():
                 index_padrao = i
                 break
         
-        device_selecionado = st.selectbox("Fonte de Áudio (Selecione 'Mixagem Estéreo' ou similar):", dispositivos, index=index_padrao if dispositivos else 0)
+        if dispositivos:
+            device_selecionado = st.selectbox("Fonte de Áudio (Selecione 'Mixagem Estéreo' ou similar):", dispositivos, index=index_padrao)
+        else:
+            st.warning("⚠️ Nenhum dispositivo detectado automaticamente. Digite o nome exato abaixo (ex: Mixagem estéreo).")
+            st.info("Dica: Verifique se a 'Mixagem Estéreo' está habilitada no Painel de Som do Windows (mmsys.cpl).")
+            device_selecionado = st.text_input("Nome do Dispositivo de Áudio:", value="Mixagem estéreo (Realtek(R) Audio)")
 
         # Inicializa variáveis de estado para controle da gravação
         if 'proc_gravacao' not in st.session_state:
@@ -183,7 +190,8 @@ def main():
 
         # Interface de Controle
         if st.session_state.proc_gravacao is None:
-            if st.button("🔴 Iniciar Gravação do PC", type="primary", disabled=not dispositivos):
+            # Removemos o disabled=not dispositivos para permitir tentativa manual
+            if st.button("🔴 Iniciar Gravação do PC", type="primary"):
                 nome_arquivo = time.strftime("reuniao_pc_%Y-%m-%d_%H-%M-%S.mp3")
                 cmd = [
                     ffmpeg_path, '-y', '-f', 'dshow', 
