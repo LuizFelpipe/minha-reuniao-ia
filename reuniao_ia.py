@@ -2,19 +2,16 @@ import os
 import time
 import subprocess
 import re
-import tempfile
+import shutil
 import streamlit as st
 import google.generativeai as genai
 from dotenv import load_dotenv
-
-# Configuração da Página
-st.set_page_config(page_title="IA de Reuniões", page_icon="🎙️")
 
 load_dotenv()
 
 def listar_dispositivos_audio(ffmpeg_path):
     """Lista os dispositivos de áudio disponíveis no sistema usando ffmpeg."""
-    if not ffmpeg_path or not os.path.exists(ffmpeg_path):
+    if not ffmpeg_path:
         return []
         
     try:
@@ -46,101 +43,75 @@ def listar_dispositivos_audio(ffmpeg_path):
 def gerar_ata_com_gemini(audio_path, api_key, model_name):
     """Envia o áudio para o Gemini e retorna a ata formatada."""
     genai.configure(api_key=api_key)
-
-    # Upload do arquivo para o Google AI Studio
-    # Nota: O Gemini processa arquivos temporários. Em produção, idealmente gerenciamos o ciclo de vida do arquivo.
+    
+    # Upload do arquivo
     audio_file = genai.upload_file(path=audio_path)
     
-    # Aguarda o processamento do arquivo pelo Google (necessário para arquivos maiores)
+    # Aguarda processamento do áudio pelo Google
     while audio_file.state.name == "PROCESSING":
-        time.sleep(10)
+        time.sleep(2)
         audio_file = genai.get_file(audio_file.name)
 
     if audio_file.state.name == "FAILED":
-        raise ValueError("O processamento do arquivo de áudio falhou no servidor do Google.")
+        raise ValueError("Falha no processamento do áudio pelo Gemini.")
 
-    # Usa o modelo selecionado pelo usuário
     model = genai.GenerativeModel(model_name)
 
     prompt = """
     Você é um secretário executivo experiente e eficiente.
     Ouça o áudio desta reunião com atenção.
     
-    Sua tarefa é gerar um documento estruturado em Markdown contendo:
-    1. **Resumo Executivo**: Um parágrafo conciso sobre o objetivo da reunião.
-    2. **Participantes**: Identifique os participantes pelo contexto (se possível) ou liste como "Participante 1", "Participante 2".
-    3. **Pontos Principais Discutidos**: Lista com bullets dos tópicos abordados.
-    4. **Ações e Tarefas (Action Items)**: Quem deve fazer o quê e, se mencionado, para quando.
-    5. **Decisões Tomadas**: O que foi martelo batido.
+    Sua tarefa é gerar um documento estruturado contendo:
+    1. **Resumo Executivo**: Um parágrafo conciso.
+    2. **Participantes**: Identifique pelo contexto ou liste genérico.
+    3. **Pontos Principais**: Lista de tópicos.
+    4. **Ações (Action Items)**: Quem faz o quê.
+    5. **Decisões**: O que foi decidido.
     
     O tom deve ser profissional e corporativo. Responda em Português do Brasil.
     """
 
-    # Timeout aumentado para 600s (10 min) para dar tempo de processar reuniões longas
-    response = model.generate_content([prompt, audio_file], request_options={"timeout": 600})
+    response = model.generate_content([prompt, audio_file])
     return response.text
 
 def main():
-    # Detecção inteligente do FFmpeg
+    # --- CONFIGURAÇÃO INICIAL ---
+    st.set_page_config(page_title="Assistente de Reunião IA", page_icon="🎙️")
+    
+    # Detecção do FFmpeg (Compatível com Windows Local e Cloud/Linux)
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    ffmpeg_path = os.path.join(script_dir, "ffmpeg.exe")
-    
-    if not os.path.exists(ffmpeg_path):
-        # Tenta fallback para comando global se não achar local
-        import shutil
-        if shutil.which("ffmpeg"):
-            ffmpeg_path = "ffmpeg"
-        else:
-            st.error("❌ ffmpeg.exe não encontrado. A gravação não funcionará.")
-            ffmpeg_path = None
+    ffmpeg_local_win = os.path.join(script_dir, "ffmpeg.exe")
+    ffmpeg_path = None
 
+    if shutil.which("ffmpeg"):
+        ffmpeg_path = "ffmpeg" # Instalado no sistema (Cloud/Linux)
+    elif os.path.exists(ffmpeg_local_win):
+        ffmpeg_path = ffmpeg_local_win # Local Windows
+
+    # --- INTERFACE ---
     st.title("🎙️ Assistente de Reunião com IA")
-    st.markdown("Grave sua reunião (Teams, Meet, Presencial) e gere uma ata automaticamente.")
-
-    # Configuração da API Key (Segurança para Web)
-    # No Streamlit Cloud, usaremos st.secrets. Localmente, usa .env ou input.
-    api_key = os.getenv("GOOGLE_API_KEY")
     
-    if not api_key:
-        # Se não estiver no .env, pede na tela (útil para testar ou compartilhar)
-        api_key = st.text_input("Insira sua Google API Key", type="password")
-
-    if not api_key:
-        st.warning("Por favor, insira a chave da API para continuar.")
-        return
-
-    # Configura a API para listar modelos disponíveis
-    genai.configure(api_key=api_key)
-    
-    try:
-        # Lista modelos que suportam geração de conteúdo
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
+    # Sidebar de Configuração
+    with st.sidebar:
+        st.header("Configurações")
+        api_key = st.text_input("Chave API Google (Gemini)", value=os.getenv("GOOGLE_API_KEY") or "", type="password")
         
-        # Tenta selecionar o Pro ou Flash automaticamente como padrão
-        default_index = 0
-        for i, m in enumerate(available_models):
-            if "gemini-1.5-pro" in m: # Prioridade para o Pro
-                default_index = i
-                break
+        model_options = ["gemini-1.5-flash", "gemini-1.5-pro"]
+        model_name = st.selectbox("Modelo IA", model_options, index=0)
         
-        model_choice = st.selectbox("Modelo de IA", available_models, index=default_index)
-    except Exception as e:
-        st.error(f"Erro ao listar modelos: {e}")
-        model_choice = "models/gemini-1.5-flash" # Fallback seguro
+        st.markdown("---")
+        st.markdown("Desenvolvido para reuniões Teams/Meet.")
 
-    # Define a pasta de gravações
+    if not api_key:
+        st.warning("⚠️ Por favor, insira sua Chave de API do Google na barra lateral para continuar.")
+        st.stop()
+
+    # Pasta de gravações
     pasta_gravacoes = os.path.join(script_dir, "gravacoes")
-    
     if not os.path.exists(pasta_gravacoes):
         os.makedirs(pasta_gravacoes)
 
-    # --- LÓGICA DE GRAVAÇÃO INTEGRADA ---
-    st.subheader("1. Gravação e Entrada")
-    
-    # Inicializa estado da gravação
+    # --- ESTADO DA SESSÃO ---
     if 'gravando' not in st.session_state:
         st.session_state.gravando = False
     if 'processo_gravacao' not in st.session_state:
@@ -150,12 +121,19 @@ def main():
     if 'auto_processar' not in st.session_state:
         st.session_state.auto_processar = False
 
-    # Se estiver gravando, mostra apenas o botão de parar
+    # --- LÓGICA PRINCIPAL ---
+    
+    # Variáveis para processamento posterior
+    audio_bytes = None
+    file_suffix = ".mp3"
+
+    # MODO GRAVAÇÃO (Bloqueia a tela para focar no Stop)
     if st.session_state.gravando:
         st.error(f"🔴 GRAVANDO... ({st.session_state.arquivo_atual})")
         st.info("Minimize esta janela e vá para sua reunião. Não feche o navegador.")
         
-        if st.button("⏹️ Parar Gravação e Gerar Ata"):
+        # Botão de Parar
+        if st.button("⏹️ Parar Gravação e Gerar Ata", type="primary"):
             proc = st.session_state.processo_gravacao
             if proc:
                 try:
@@ -165,25 +143,30 @@ def main():
             
             st.session_state.gravando = False
             st.session_state.processo_gravacao = None
-            st.session_state.auto_processar = True # Gatilho para processamento automático
+            st.session_state.auto_processar = True # Ativa gatilho para processar na recarga
             st.rerun()
-            
+
+    # MODO NORMAL (Abas de seleção)
     else:
-        # Se NÃO estiver gravando, mostra abas de opções
         tab_nova, tab_existente, tab_upload = st.tabs(["🔴 Nova Gravação", "📂 Gravações Antigas", "📤 Upload Manual"])
         
+        # ABA 1: NOVA GRAVAÇÃO
         with tab_nova:
-            if ffmpeg_path:
+            st.markdown("### Gravar Áudio do Sistema (Teams/Meet)")
+            
+            # Verifica se está no Windows Local (único lugar onde dshow funciona)
+            if os.name == 'nt' and ffmpeg_path:
                 dispositivos = listar_dispositivos_audio(ffmpeg_path)
+                
                 if dispositivos:
-                    # Tenta achar Mixagem Estéreo por padrão
-                    idx = 0
-                    for i, d in enumerate(dispositivos):
-                        if "mixagem" in d.lower() or "stereo" in d.lower():
-                            idx = i
+                    # Tenta selecionar Mixagem Estéreo automaticamente
+                    idx_padrao = 0
+                    for i, dev in enumerate(dispositivos):
+                        if "mixagem" in dev.lower() or "stereo" in dev.lower():
+                            idx_padrao = i
                             break
                     
-                    device = st.selectbox("Fonte de Áudio:", dispositivos, index=idx)
+                    device_selecionado = st.selectbox("Fonte de Áudio:", dispositivos, index=idx_padrao)
                     
                     if st.button("Iniciar Gravação"):
                         nome_arquivo = time.strftime("reuniao_%Y-%m-%d_%H-%M-%S.mp3")
@@ -191,99 +174,102 @@ def main():
                         
                         cmd = [
                             ffmpeg_path, '-y', '-f', 'dshow', 
-                            '-i', f'audio={device}', 
+                            '-i', f'audio={device_selecionado}', 
                             '-vn', caminho_completo
                         ]
                         
-                        # Inicia processo sem bloquear a UI
-                        startupinfo = subprocess.STARTUPINFO()
-                        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, startupinfo=startupinfo)
-                        
-                        st.session_state.processo_gravacao = proc
-                        st.session_state.gravando = True
-                        st.session_state.arquivo_atual = nome_arquivo
-                        st.rerun()
+                        try:
+                            startupinfo = subprocess.STARTUPINFO()
+                            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, startupinfo=startupinfo)
+                            
+                            st.session_state.processo_gravacao = proc
+                            st.session_state.gravando = True
+                            st.session_state.arquivo_atual = nome_arquivo
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao iniciar gravação: {e}")
                 else:
-                    st.warning("Nenhum dispositivo de áudio encontrado. Verifique se o ffmpeg está funcionando.")
+                    st.warning("Nenhum dispositivo de áudio encontrado. Verifique se o microfone/mixagem estéreo está habilitado.")
             else:
-                st.error("FFmpeg não configurado.")
+                st.info("ℹ️ A gravação direta do sistema requer Windows e FFmpeg local.")
+                st.warning("Se você estiver na Nuvem (Streamlit Cloud), use a aba 'Upload Manual'.")
 
-    audio_bytes = None
-    file_suffix = ".mp3"
-
-    with tab_local:
-        st.info("Use o **Gravador.bat** para gravar a reunião. Os arquivos aparecerão aqui automaticamente.")
-        
-        # Lista arquivos na pasta
-        arquivos = [f for f in os.listdir(pasta_gravacoes) if f.endswith(('.mp3', '.wav', '.m4a'))]
-        arquivos.sort(key=lambda x: os.path.getmtime(os.path.join(pasta_gravacoes, x)), reverse=True)
-        
-        if arquivos:
-            # Se acabamos de gravar, seleciona o arquivo novo automaticamente
-            idx_selecao = 0
-            if st.session_state.auto_processar and st.session_state.arquivo_atual in arquivos:
-                idx_selecao = arquivos.index(st.session_state.arquivo_atual)
-
-            arquivo_selecionado = st.selectbox("Selecione a gravação:", arquivos, index=idx_selecao)
+        # ABA 2: GRAVAÇÕES ANTIGAS
+        with tab_existente:
+            st.markdown("### Histórico de Gravações")
+            arquivos = [f for f in os.listdir(pasta_gravacoes) if f.endswith(('.mp3', '.wav', '.m4a'))]
             
-            if arquivo_selecionado:
-                caminho_arquivo = os.path.join(pasta_gravacoes, arquivo_selecionado)
-                st.audio(caminho_arquivo)
-                with open(caminho_arquivo, "rb") as f:
-                    audio_bytes = f.read()
+            # Ordena por data de modificação (mais recente primeiro)
+            arquivos.sort(key=lambda x: os.path.getmtime(os.path.join(pasta_gravacoes, x)), reverse=True)
+            
+            if arquivos:
+                # Se acabou de gravar, seleciona o arquivo atual
+                idx_selecao = 0
+                if st.session_state.auto_processar and st.session_state.arquivo_atual in arquivos:
+                    idx_selecao = arquivos.index(st.session_state.arquivo_atual)
+                
+                arquivo_selecionado = st.selectbox("Selecione a gravação:", arquivos, index=idx_selecao)
+                
+                if arquivo_selecionado:
+                    caminho_arquivo = os.path.join(pasta_gravacoes, arquivo_selecionado)
+                    st.audio(caminho_arquivo)
                     
-                # Se for processamento automático, define o sufixo corretamente
-                file_suffix = os.path.splitext(arquivo_selecionado)[1]
-        else:
-            st.warning("Nenhuma gravação encontrada na pasta 'gravacoes'.")
-            if st.button("🔄 Atualizar Lista"):
-                st.rerun()
+                    # Prepara para processamento
+                    with open(caminho_arquivo, "rb") as f:
+                        audio_bytes = f.read()
+                    file_suffix = os.path.splitext(arquivo_selecionado)[1]
+            else:
+                st.info("Nenhuma gravação encontrada.")
+                if st.button("🔄 Atualizar"):
+                    st.rerun()
 
+        # ABA 3: UPLOAD
         with tab_upload:
-            uploaded_file = st.file_uploader("Selecione um arquivo (.mp3, .wav, .m4a, .webm, .mp4)", type=["mp3", "wav", "m4a", "webm", "mp4"])
-            if uploaded_file is not None:
+            st.markdown("### Upload de Arquivo")
+            uploaded_file = st.file_uploader("Arraste seu arquivo aqui", type=["mp3", "wav", "m4a", "webm", "mp4"])
+            
+            if uploaded_file:
                 audio_bytes = uploaded_file.getvalue()
                 file_suffix = os.path.splitext(uploaded_file.name)[1]
                 st.audio(audio_bytes, format=uploaded_file.type if "audio" in uploaded_file.type else "video/webm")
 
-    # --- PROCESSAMENTO ---
-    if audio_bytes is not None:
-        st.subheader("2. Processamento")
-        
-        # Botão manual OU Gatilho automático
-        if st.button("Gerar Ata e Resumo") or st.session_state.auto_processar:
-            with st.spinner("A IA está ouvindo e escrevendo a ata..."):
-                try:
-                    # Salva o áudio temporariamente para enviar ao Gemini
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as tmp_file:
-                        tmp_file.write(audio_bytes)
-                        tmp_filename = tmp_file.name
+    # --- PROCESSAMENTO DA IA ---
+    st.markdown("---")
+    st.subheader("2. Gerar Ata e Resumo")
 
-                    # Chama a IA
-                    ata = gerar_ata_com_gemini(tmp_filename, api_key, model_choice)
-                    
-                    # Exibe o resultado
-                    st.success("Ata gerada com sucesso!")
-                    st.markdown("---")
-                    st.markdown(ata)
-                    
-                    # Botão de Download
-                    st.download_button(
-                        label="Baixar Ata (.md)",
-                        data=ata,
-                        file_name="ata_reuniao.md",
-                        mime="text/markdown"
-                    )
-                    
-                    # Limpeza
-                    os.unlink(tmp_filename)
-                    
-                    # Reseta o gatilho automático para não rodar de novo ao recarregar
-                    st.session_state.auto_processar = False
+    # Botão de ação (Manual ou Automático)
+    pode_processar = audio_bytes is not None
+    gatilho_auto = st.session_state.auto_processar and pode_processar
+    
+    if gatilho_auto:
+        st.info("🚀 Iniciando processamento automático da gravação finalizada...")
 
-                except Exception as e:
-                    st.error(f"Ocorreu um erro: {e}")
+    if st.button("✨ Gerar Ata com IA", disabled=not pode_processar, type="primary") or gatilho_auto:
+        with st.spinner("A IA está ouvindo o áudio e escrevendo a ata..."):
+            try:
+                # Salva temporário
+                with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as tmp_file:
+                    tmp_file.write(audio_bytes)
+                    tmp_filename = tmp_file.name
+                
+                # Chama Gemini
+                resultado = gerar_ata_com_gemini(tmp_filename, api_key, model_name)
+                
+                # Exibe Resultado
+                st.success("Ata gerada com sucesso!")
+                st.markdown(resultado)
+                
+                # Download
+                st.download_button("📥 Baixar Ata (.txt)", data=resultado, file_name="ata_reuniao.txt")
+                
+                # Limpeza
+                os.unlink(tmp_filename)
+                st.session_state.auto_processar = False # Reseta gatilho
+                
+            except Exception as e:
+                st.error(f"Erro no processamento: {e}")
+                st.session_state.auto_processar = False
 
 if __name__ == "__main__":
     main()
