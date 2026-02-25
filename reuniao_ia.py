@@ -1,11 +1,9 @@
 import os
 import time
-import re
-import shutil
 import subprocess
+import re
 import tempfile
 import streamlit as st
-from streamlit_mic_recorder import mic_recorder
 import google.generativeai as genai
 from dotenv import load_dotenv
 
@@ -16,9 +14,11 @@ load_dotenv()
 
 def listar_dispositivos_audio(ffmpeg_path):
     """Lista os dispositivos de áudio disponíveis no sistema usando ffmpeg."""
+    if not ffmpeg_path or not os.path.exists(ffmpeg_path):
+        return []
+        
     try:
-        # Executa o comando para listar dispositivos (saída vai para stderr)
-        # Usamos encoding='utf-8' com errors='ignore' para evitar travamentos com acentos
+        # Executa o comando para listar dispositivos
         cmd = [ffmpeg_path, '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy']
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
         output = result.stderr
@@ -34,10 +34,8 @@ def listar_dispositivos_audio(ffmpeg_path):
                 capturing = False
                 continue
             
-            # Captura qualquer coisa entre aspas que não seja "Alternative name"
             if capturing:
-                if "Alternative name" in line:
-                    continue
+                if "Alternative name" in line: continue
                 match = re.search(r'"([^"]+)"', line)
                 if match:
                     devices.append(match.group(1))
@@ -83,24 +81,18 @@ def gerar_ata_com_gemini(audio_path, api_key, model_name):
     return response.text
 
 def main():
-    # Detecção inteligente do FFmpeg (Funciona no Windows Local e na Nuvem/Linux)
+    # Detecção inteligente do FFmpeg
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    ffmpeg_local_win = os.path.join(script_dir, "ffmpeg.exe")
+    ffmpeg_path = os.path.join(script_dir, "ffmpeg.exe")
     
-    # 1. Tenta encontrar no PATH do sistema (Linux/Streamlit Cloud)
-    if shutil.which("ffmpeg"):
-        ffmpeg_path = "ffmpeg"
-    # 2. Tenta encontrar o arquivo local (Windows Portátil)
-    elif os.path.exists(ffmpeg_local_win):
-        ffmpeg_path = ffmpeg_local_win
-    else:
-        ffmpeg_path = None
-
-    # Validação Inicial de Dependências
-    if ffmpeg_path is None:
-        st.error("❌ Arquivo 'ffmpeg.exe' não encontrado na pasta do projeto!")
-        st.warning(f"O sistema não encontrou o FFmpeg instalado globalmente nem o arquivo local 'ffmpeg.exe'.\n\nSe estiver no Windows, coloque o ffmpeg.exe na pasta: {script_dir}")
-        st.stop()
+    if not os.path.exists(ffmpeg_path):
+        # Tenta fallback para comando global se não achar local
+        import shutil
+        if shutil.which("ffmpeg"):
+            ffmpeg_path = "ffmpeg"
+        else:
+            st.error("❌ ffmpeg.exe não encontrado. A gravação não funcionará.")
+            ffmpeg_path = None
 
     st.title("🎙️ Assistente de Reunião com IA")
     st.markdown("Grave sua reunião (Teams, Meet, Presencial) e gere uma ata automaticamente.")
@@ -139,121 +131,128 @@ def main():
         st.error(f"Erro ao listar modelos: {e}")
         model_choice = "models/gemini-1.5-flash" # Fallback seguro
 
-    # Componente de Entrada (Gravação ou Upload)
-    st.subheader("1. Entrada de Áudio")
-    tab_gravacao, tab_pc, tab_upload = st.tabs(["🎙️ Gravar (Mic)", "🖥️ Gravar (Teams/Meet)", "📂 Upload Arquivo"])
+    # Define a pasta de gravações
+    pasta_gravacoes = os.path.join(script_dir, "gravacoes")
+    
+    if not os.path.exists(pasta_gravacoes):
+        os.makedirs(pasta_gravacoes)
 
-    with tab_gravacao:
-        st.info("""
-        ℹ️ **Atenção para Reuniões Online (Teams, Zoom, Meet):**
-        O gravador do navegador captura apenas o **seu microfone**. Ele não consegue ouvir os outros participantes se você estiver de fone.
-        
-        👉 **Recomendação:** Grave a reunião pelo próprio Teams/Zoom, baixe o arquivo e use a aba **'Upload Arquivo'** ao lado.
-        """)
-        # O mic_recorder retorna um dicionário com 'bytes' e outros metadados
-        audio_recorder_data = mic_recorder(
-            start_prompt="▶️ Iniciar Gravação",
-            stop_prompt="⏹️ Parar Gravação",
-            just_once=False,
-            use_container_width=False,
-            format="wav",
-            key="recorder"
-        )
-        # Extrai apenas os bytes se houver gravação
-        wav_audio_data = audio_recorder_data['bytes'] if audio_recorder_data else None
+    # --- LÓGICA DE GRAVAÇÃO INTEGRADA ---
+    st.subheader("1. Gravação e Entrada")
+    
+    # Inicializa estado da gravação
+    if 'gravando' not in st.session_state:
+        st.session_state.gravando = False
+    if 'processo_gravacao' not in st.session_state:
+        st.session_state.processo_gravacao = None
+    if 'arquivo_atual' not in st.session_state:
+        st.session_state.arquivo_atual = None
+    if 'auto_processar' not in st.session_state:
+        st.session_state.auto_processar = False
 
-    with tab_pc:
-        st.info("Esta opção grava o som do sistema (o que você ouve). Ideal para capturar o áudio de reuniões online.")
+    # Se estiver gravando, mostra apenas o botão de parar
+    if st.session_state.gravando:
+        st.error(f"🔴 GRAVANDO... ({st.session_state.arquivo_atual})")
+        st.info("Minimize esta janela e vá para sua reunião. Não feche o navegador.")
         
-        # Detecta dispositivos disponíveis dinamicamente
-        dispositivos = listar_dispositivos_audio(ffmpeg_path)
-        
-        # Tenta selecionar automaticamente um dispositivo de Loopback (Mixagem/Stereo/Cable)
-        index_padrao = 0
-        for i, dev in enumerate(dispositivos):
-            if any(x in dev.lower() for x in ["mixagem", "stereo", "cable", "virtual"]):
-                index_padrao = i
-                break
-        
-        if dispositivos:
-            device_selecionado = st.selectbox("Fonte de Áudio (Selecione 'Mixagem Estéreo' ou similar):", dispositivos, index=index_padrao)
-        else:
-            st.warning("⚠️ Nenhum dispositivo detectado automaticamente. Digite o nome exato abaixo (ex: Mixagem estéreo).")
-            st.info("Dica: Verifique se a 'Mixagem Estéreo' está habilitada no Painel de Som do Windows (mmsys.cpl).")
-            device_selecionado = st.text_input("Nome do Dispositivo de Áudio:", value="Mixagem estéreo (Realtek(R) Audio)")
-
-        # Inicializa variáveis de estado para controle da gravação
-        if 'proc_gravacao' not in st.session_state:
-            st.session_state.proc_gravacao = None
-        if 'arquivo_gravado_pc' not in st.session_state:
-            st.session_state.arquivo_gravado_pc = None
-
-        # Interface de Controle
-        if st.session_state.proc_gravacao is None:
-            # Removemos o disabled=not dispositivos para permitir tentativa manual
-            if st.button("🔴 Iniciar Gravação do PC", type="primary"):
-                nome_arquivo = time.strftime("reuniao_pc_%Y-%m-%d_%H-%M-%S.mp3")
-                cmd = [
-                    ffmpeg_path, '-y', '-f', 'dshow', 
-                    '-i', f'audio={device_selecionado}', 
-                    '-vn', nome_arquivo
-                ]
+        if st.button("⏹️ Parar Gravação e Gerar Ata"):
+            proc = st.session_state.processo_gravacao
+            if proc:
                 try:
-                    # Inicia o ffmpeg sem abrir janela preta (CREATE_NO_WINDOW/USESHOWWINDOW)
-                    startupinfo = subprocess.STARTUPINFO()
-                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                    
-                    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, startupinfo=startupinfo)
-                    st.session_state.proc_gravacao = proc
-                    st.session_state.arquivo_gravado_pc = nome_arquivo
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Erro ao iniciar: {e}")
-                    st.warning("""
-                    Possíveis causas:
-                    1. O dispositivo selecionado não está disponível.
-                    2. Permissões de microfone do Windows bloqueadas.
-                    """)
-        else:
-            st.warning(f"🎙️ Gravando... Arquivo: {st.session_state.arquivo_gravado_pc}")
-            if st.button("⏹️ Parar Gravação", type="secondary"):
-                proc = st.session_state.proc_gravacao
-                try:
-                    # Envia 'q' para parar suavemente e salvar o arquivo corretamente
-                    proc.communicate(input=b'q')
+                    proc.communicate(input=b'q', timeout=5)
                 except:
                     proc.terminate()
-                
-                st.session_state.proc_gravacao = None
-                st.success("Gravação finalizada! O áudio foi selecionado abaixo.")
-                time.sleep(1) # Pequena pausa para garantir que o arquivo fechou
+            
+            st.session_state.gravando = False
+            st.session_state.processo_gravacao = None
+            st.session_state.auto_processar = True # Gatilho para processamento automático
+            st.rerun()
+            
+    else:
+        # Se NÃO estiver gravando, mostra abas de opções
+        tab_nova, tab_existente, tab_upload = st.tabs(["🔴 Nova Gravação", "📂 Gravações Antigas", "📤 Upload Manual"])
+        
+        with tab_nova:
+            if ffmpeg_path:
+                dispositivos = listar_dispositivos_audio(ffmpeg_path)
+                if dispositivos:
+                    # Tenta achar Mixagem Estéreo por padrão
+                    idx = 0
+                    for i, d in enumerate(dispositivos):
+                        if "mixagem" in d.lower() or "stereo" in d.lower():
+                            idx = i
+                            break
+                    
+                    device = st.selectbox("Fonte de Áudio:", dispositivos, index=idx)
+                    
+                    if st.button("Iniciar Gravação"):
+                        nome_arquivo = time.strftime("reuniao_%Y-%m-%d_%H-%M-%S.mp3")
+                        caminho_completo = os.path.join(pasta_gravacoes, nome_arquivo)
+                        
+                        cmd = [
+                            ffmpeg_path, '-y', '-f', 'dshow', 
+                            '-i', f'audio={device}', 
+                            '-vn', caminho_completo
+                        ]
+                        
+                        # Inicia processo sem bloquear a UI
+                        startupinfo = subprocess.STARTUPINFO()
+                        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, startupinfo=startupinfo)
+                        
+                        st.session_state.processo_gravacao = proc
+                        st.session_state.gravando = True
+                        st.session_state.arquivo_atual = nome_arquivo
+                        st.rerun()
+                else:
+                    st.warning("Nenhum dispositivo de áudio encontrado. Verifique se o ffmpeg está funcionando.")
+            else:
+                st.error("FFmpeg não configurado.")
+
+    audio_bytes = None
+    file_suffix = ".mp3"
+
+    with tab_local:
+        st.info("Use o **Gravador.bat** para gravar a reunião. Os arquivos aparecerão aqui automaticamente.")
+        
+        # Lista arquivos na pasta
+        arquivos = [f for f in os.listdir(pasta_gravacoes) if f.endswith(('.mp3', '.wav', '.m4a'))]
+        arquivos.sort(key=lambda x: os.path.getmtime(os.path.join(pasta_gravacoes, x)), reverse=True)
+        
+        if arquivos:
+            # Se acabamos de gravar, seleciona o arquivo novo automaticamente
+            idx_selecao = 0
+            if st.session_state.auto_processar and st.session_state.arquivo_atual in arquivos:
+                idx_selecao = arquivos.index(st.session_state.arquivo_atual)
+
+            arquivo_selecionado = st.selectbox("Selecione a gravação:", arquivos, index=idx_selecao)
+            
+            if arquivo_selecionado:
+                caminho_arquivo = os.path.join(pasta_gravacoes, arquivo_selecionado)
+                st.audio(caminho_arquivo)
+                with open(caminho_arquivo, "rb") as f:
+                    audio_bytes = f.read()
+                    
+                # Se for processamento automático, define o sufixo corretamente
+                file_suffix = os.path.splitext(arquivo_selecionado)[1]
+        else:
+            st.warning("Nenhuma gravação encontrada na pasta 'gravacoes'.")
+            if st.button("🔄 Atualizar Lista"):
                 st.rerun()
 
-    with tab_upload:
-        uploaded_file = st.file_uploader("Selecione um arquivo (.mp3, .wav, .m4a)", type=["mp3", "wav", "m4a"])
+        with tab_upload:
+            uploaded_file = st.file_uploader("Selecione um arquivo (.mp3, .wav, .m4a, .webm, .mp4)", type=["mp3", "wav", "m4a", "webm", "mp4"])
+            if uploaded_file is not None:
+                audio_bytes = uploaded_file.getvalue()
+                file_suffix = os.path.splitext(uploaded_file.name)[1]
+                st.audio(audio_bytes, format=uploaded_file.type if "audio" in uploaded_file.type else "video/webm")
 
-    # Lógica para definir qual áudio processar
-    audio_bytes = None
-    file_suffix = ".wav" # Padrão para gravação
-
-    if uploaded_file is not None:
-        audio_bytes = uploaded_file.getvalue()
-        file_suffix = os.path.splitext(uploaded_file.name)[1]
-        st.audio(audio_bytes, format=uploaded_file.type)
-    elif wav_audio_data is not None:
-        audio_bytes = wav_audio_data
-    elif st.session_state.get('arquivo_gravado_pc') and os.path.exists(st.session_state.arquivo_gravado_pc):
-        # Carrega o arquivo gravado pelo ffmpeg
-        arquivo_pc = st.session_state.arquivo_gravado_pc
-        st.info(f"Usando arquivo gravado: {arquivo_pc}")
-        with open(arquivo_pc, "rb") as f:
-            audio_bytes = f.read()
-        file_suffix = ".mp3"
-        st.audio(audio_bytes, format="audio/mp3")
-
+    # --- PROCESSAMENTO ---
     if audio_bytes is not None:
         st.subheader("2. Processamento")
-        if st.button("Gerar Ata e Resumo"):
+        
+        # Botão manual OU Gatilho automático
+        if st.button("Gerar Ata e Resumo") or st.session_state.auto_processar:
             with st.spinner("A IA está ouvindo e escrevendo a ata..."):
                 try:
                     # Salva o áudio temporariamente para enviar ao Gemini
@@ -279,6 +278,9 @@ def main():
                     
                     # Limpeza
                     os.unlink(tmp_filename)
+                    
+                    # Reseta o gatilho automático para não rodar de novo ao recarregar
+                    st.session_state.auto_processar = False
 
                 except Exception as e:
                     st.error(f"Ocorreu um erro: {e}")
