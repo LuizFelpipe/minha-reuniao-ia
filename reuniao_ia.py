@@ -1,6 +1,7 @@
 import os
 import time
 import re
+import shutil
 import subprocess
 import tempfile
 import streamlit as st
@@ -80,14 +81,23 @@ def gerar_ata_com_gemini(audio_path, api_key, model_name):
     return response.text
 
 def main():
-    # Garante que o caminho seja relativo ao arquivo do script, não onde o terminal abriu
+    # Detecção inteligente do FFmpeg (Funciona no Windows Local e na Nuvem/Linux)
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    ffmpeg_path = os.path.join(script_dir, "ffmpeg.exe")
+    ffmpeg_local_win = os.path.join(script_dir, "ffmpeg.exe")
+    
+    # 1. Tenta encontrar no PATH do sistema (Linux/Streamlit Cloud)
+    if shutil.which("ffmpeg"):
+        ffmpeg_path = "ffmpeg"
+    # 2. Tenta encontrar o arquivo local (Windows Portátil)
+    elif os.path.exists(ffmpeg_local_win):
+        ffmpeg_path = ffmpeg_local_win
+    else:
+        ffmpeg_path = None
 
     # Validação Inicial de Dependências
-    if not os.path.exists(ffmpeg_path):
+    if ffmpeg_path is None:
         st.error("❌ Arquivo 'ffmpeg.exe' não encontrado na pasta do projeto!")
-        st.warning(f"O sistema procurou em: {ffmpeg_path}\n\nCertifique-se de que o arquivo ffmpeg.exe está exatamente ao lado do reuniao_ia.py.")
+        st.warning(f"O sistema não encontrou o FFmpeg instalado globalmente nem o arquivo local 'ffmpeg.exe'.\n\nSe estiver no Windows, coloque o ffmpeg.exe na pasta: {script_dir}")
         st.stop()
 
     st.title("🎙️ Assistente de Reunião com IA")
