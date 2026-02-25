@@ -195,6 +195,13 @@ def main():
                 st.info("ℹ️ A gravação direta do sistema requer Windows e FFmpeg local.")
                 st.warning("Se você estiver na Nuvem (Streamlit Cloud), use a aba 'Upload Manual'.")
 
+                # Diagnóstico para ajudar a identificar o problema
+                st.markdown("---")
+                st.caption("🔍 Diagnóstico Técnico:")
+                st.text(f"Sistema Operacional: {os.name} (Esperado: nt)")
+                st.text(f"Arquivo local esperado: {ffmpeg_local_win}")
+                st.text(f"Status do arquivo: {'❌ Não encontrado' if not os.path.exists(ffmpeg_local_win) else '✅ Encontrado'}")
+
         # ABA 2: GRAVAÇÕES ANTIGAS
         with tab_existente:
             st.markdown("### Histórico de Gravações")
